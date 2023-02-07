@@ -1,0 +1,76 @@
+# parameters   **********此ccem—wffm下是否可以不要PAN，只要FPN************
+nc: 80  # number of classes
+depth_multiple: 0.67  # model depth multiple 控制模型的深度，表示BottleneckCSP模块的层缩放因子，将所有的BottleneckCSP模块的Bottleneck乘以该参数得到最终的个数 *******原来yolom这里为0.67
+width_multiple: 0.75  # layer channel multiple 控制模型的宽度，卷积通道的缩放因子，将配置的backbone和head部分Conv通道的设置，全部乘以该系数
+
+# anchors
+anchors:
+  - [10,13, 16,30, 33,23]  # P3/8
+  - [30,61, 62,45, 59,119]  # P4/16
+  - [116,90, 156,198, 373,326]  # P5/32
+
+# YOLOv5 backbone
+backbone:
+  # [from, number, module, args]
+  #from表示当前模块来自于哪一层的输出，-1代表从上一层获得的输入；number表示模块重复的次数
+  [[-1, 1, Conv, [64, 6, 2, 2]],  # 0-P1/2     #focus模块并未提升mAP，但是会减少FLOPS并提升推理速度
+   [-1, 1, Conv, [128, 3, 2]],  # 1-P2/4
+   [-1, 3, C3, [128]],
+   [-1, 1, Conv, [256, 3, 2]],  # 3-P3/8
+   [-1, 9, C3, [256]],  # **
+   [-1, 1, Conv, [512, 3, 2]],  # 5-P4/16
+   [-1, 9, C3, [512]],  # **
+   [-1, 1, Conv, [1024, 3, 2]],  # 7-P5/32
+   [-1, 3, C3, [1024]],  # 9  **
+   [-1, 1, SPPF, [1024, 5]],    #SPP增大感受野，几乎不会影响速度
+  ]
+
+# YOLOv5 head（作者没有包含neck部分，故head包括PANet+Detect部分）
+head:
+  [[-1, 1, Conv, [512, 1, 1]], #10
+   [-1, 1, nn.Upsample, [None, 2, 'nearest']],
+   [[-1, 6], 1, Concat, [1]],  # cat backbone P4  out_channels：1024
+   [-1, 3, C3, [512, False]],  # 13 第一次上采样后的结果
+
+   [-1, 1, Conv, [256, 1, 1]],  #14
+   [-1, 1, nn.Upsample, [None, 2, 'nearest']],
+   [[-1, 4], 1, Fuse, [256, 1]],  # cat backbone P3   out_channels :512
+   [4, 1, CIEM, [256]],       #huanglu
+   [[-1, 17], 1, Add, []],    #huanglu    18 新的检测头(P3/8-small)   注：这个地方需要更改，把BottleneckCSP放在后面，但需要1x1卷积改变通道
+   [-1, 3, C3, [256, False]],  # 19 (P3/8-small)
+
+   [-1, 1, Conv, [256, 3, 2]], # 20
+   [[-1, 14], 1, Concat, [1]],  # cat head P4   out_channels :512
+   [6, 1, CIEM, [512]],         #huanglu
+   [[-1, 21],1, Add, []],         #huanglu
+   [-1, 3, C3, [512, False]],  # 24 (P4/16-medium) 新的检测头(P4/16-medium)
+
+   [-1, 1, Conv, [512, 3, 2]],   #25
+   [[-1, 10], 1, Concat, [1]],  # cat head P5    out_channels:1024
+   [9, 1, CIEM, [1024]],        #huanglu
+   [[-1, 26], 1, Add, []],       #huanglu
+   [-1, 3, C3, [1024, False]],  # 29 (P5/32-large)   新的检测头(P5/32-large)
+
+   #检测小目标，channels：256 采用WFFM方法，  19 24 29
+   [ 24, 1, Conv, [ 256, 1, 1 ] ],   #30
+   [ -1, 1, nn.Upsample, [ None, 2, 'nearest' ] ],  #P4分辨率变成8
+   [ 29, 1, Conv, [ 512, 1, 1 ] ],
+   [ -1, 1, nn.Upsample, [ None, 2, 'nearest' ] ],  #P5分辨率变成16   33
+   [ -1, 1, Conv, [ 256, 1, 1 ] ],
+   [ -1, 1, nn.Upsample, [ None, 2, 'nearest' ] ],  #P5分辨率变成8
+   [[-1, 31, 19], 1, WFFM, [0.2, 0.3, 0.5]],      # 大中小-》小 **36
+
+   #检测中目标，channels:512
+   [ 19, 1, Conv, [512, 3, 2] ],   #37  P3分辨率变成16
+   [[-1, 33, 24], 1, WFFM, [0.25, 0.25, 0.5]],   #小大中-》中 **38
+
+   #检测大目标，channels：1024
+   [ 37, 1, Conv, [1024, 3, 2] ],   #39  P3分辨率变成32
+   [ 24, 1, Conv, [1024, 3, 2] ],   #40  P4分辨率变成32
+   [[-1, 39, 29], 1, WFFM, [0.3, 0.2, 0.5]],      #中小大-》大  **41
+
+   [36, 3, C3, [256, False]],  #42
+   [38, 3, C3, [512, False]],  #43
+   [41, 3, C3, [1024, False]],  #44
+   [[42, 43, 44], 1, Detect, [nc, anchors]],  # Detect(P3, P4, P5)
+  ]

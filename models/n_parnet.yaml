@@ -1,0 +1,60 @@
+# parameters
+nc: 80  # number of classes
+depth_multiple: 0.33  # model depth multiple 控制模型的深度，表示BottleneckCSP模块的层缩放因子，将所有的BottleneckCSP模块的Bottleneck乘以该参数得到最终的个数
+width_multiple: 0.5  # layer channel multiple 控制模型的宽度，卷积通道的缩放因子，将配置的backbone和head部分Conv通道的设置，全部乘以该系数
+
+# anchors
+anchors:
+  - [10,13, 16,30, 33,23]  # P3/8
+  - [30,61, 62,45, 59,119]  # P4/16
+  - [116,90, 156,198, 373,326]  # P5/32
+
+# YOLOv5 backbone
+backbone:
+  # [from, number, module, args]
+  #from表示当前模块来自于哪一层的输出，-1代表从上一层获得的输入；number表示模块重复的次数
+  [[-1, 1, Focus, [64, 3]],  # 0-P1/2     #focus模块并未提升mAP，但是会减少FLOPS并提升推理速度
+   [-1, 1, Downsampling, [128]],  # 1-P2/4
+   [-1, 1, Downsampling, [256]],  # 2-P3/8
+   [-1, 1, Downsampling, [512]],  # 3-P4/16
+
+   [1, 1, Par_n_Block, [128,4]],  #4 stream_1   #注意这里的n最后将会代替模块内的参数n，或者写成[1,1,Par_n_Block,[128,4]]
+   [-1, 1, Downsampling, [256]],  #5 P3/8
+
+   [2, 1, Par_n_Block, [256,5]],  #6 stream_2
+
+   [[-1, 5], 1, Add, []], #7 **branch small channels:256
+
+   [3, 1, Par_n_Block, [512,5]],  #8 stream_3
+
+   [7, 1, Downsampling, [512]],  #9 第一次融合后并未下采样，故需要下采样使得下一次融合的尺寸保持不变
+   [[-1,8], 1, Add, []], #10 **branch medium channels:512
+
+   [-1, 1, Downsampling, [1024]], # 11 P5-32
+   [-1, 1, SPP, [1024, [5, 9, 13]]],  #12
+   [-1, 1, Par_n_Block, [1024, 1]],  # 13 **branch large channels:1024
+  ]
+
+# YOLOv5 head（作者没有包含neck部分，故head包括PANet+Detect部分）  ###思考PAN网络中cat操作在拼接前不做1x1卷积，效果是否更好
+
+head:
+  [[-1, 1, Conv, [512, 1, 1]],  #25     14
+   [-1, 1, nn.Upsample, [None, 2, 'nearest']],
+   [[-1, 10], 1, Concat, [1]],  # cat backbone P4  channels:1024
+   [-1, 3, BottleneckCSP, [512, False]],  # 28     17
+
+   [-1, 1, Conv, [256, 1, 1]], #29   18
+   [-1, 1, nn.Upsample, [None, 2, 'nearest']],
+   [[-1, 7], 1, Concat, [1]],  # cat backbone P3   channels:512
+   [-1, 3, BottleneckCSP, [256, False]],  # 32 (P3/8-small)    21
+
+   [-1, 1, Conv, [256, 3, 2]], #33     22
+   [[-1, 18], 1, Concat, [1]],  # cat head P4     channels:512
+   [-1, 3, BottleneckCSP, [512, False]],  # 35 (P4/16-medium)    24
+
+   [-1, 1, Conv, [512, 3, 2]], #36   25
+   [[-1, 14], 1, Concat, [1]],  # cat head P5
+   [-1, 3, BottleneckCSP, [1024, False]],  # 38 (P5/32-large)   27
+
+   [[21, 24, 27], 1, Detect, [nc, anchors]],  # Detect(P3, P4, P5)  28
+  ]
